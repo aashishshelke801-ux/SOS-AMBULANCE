@@ -1,6 +1,6 @@
 # Ambulance Emergency Response & Coordination System
 
-College-level Smart India Hackathon 2026 MVP. It demonstrates one connected workflow: patient SOS → ETA-based ambulance matching → driver response → coordinator oversight → hospital pre-alert → closure. This is **demo software only**: it has no connection to 108/112, hospitals, traffic providers, or real emergency dispatch infrastructure.
+Ambulance Emergency Response & Coordination System prototype MVP. It demonstrates one connected workflow: patient SOS → ETA-based ambulance matching → driver response → coordinator oversight → hospital pre-alert → closure. This is **demo software only**: it has no connection to 108/112, hospitals, traffic providers, or real emergency dispatch infrastructure.
 
 ## Stack and structure
 

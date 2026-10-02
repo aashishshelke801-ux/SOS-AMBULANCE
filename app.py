@@ -40,7 +40,7 @@ def get_db_path():
 
 DB = get_db_path()
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'sih-demo-only-change-me')
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'emergency-response-demo-key')
 
 class PrefixMiddleware(object):
     """Normalize PATH_INFO if a serverless proxy or rewrite prepends /app.py or /api/index"""
@@ -89,7 +89,7 @@ SCHEMA='''
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT,phone TEXT,email TEXT UNIQUE,password_hash TEXT,role TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS drivers(id INTEGER PRIMARY KEY,user_id INTEGER,license_number TEXT,verification_status TEXT);
 CREATE TABLE IF NOT EXISTS ambulances(id INTEGER PRIMARY KEY,driver_id INTEGER,registration_number TEXT UNIQUE,ambulance_type TEXT,vehicle_model TEXT,status TEXT,latitude REAL,longitude REAL,created_at TEXT);
-CREATE TABLE IF NOT EXISTS emergency_requests(id INTEGER PRIMARY KEY,patient_id INTEGER,patient_name TEXT,emergency_type TEXT,priority TEXT,patient_count INTEGER DEFAULT 1,incident_id TEXT,severity TEXT,traffic_level TEXT,hospital_status TEXT,latitude REAL,longitude REAL,notes TEXT,status TEXT,assigned_ambulance_id INTEGER,assigned_at TEXT,created_at TEXT,updated_at TEXT);
+CREATE TABLE IF NOT EXISTS emergency_requests(id INTEGER PRIMARY KEY,patient_id INTEGER,patient_name TEXT,patient_phone TEXT,emergency_type TEXT,priority TEXT,patient_count INTEGER DEFAULT 1,incident_id TEXT,severity TEXT,traffic_level TEXT,hospital_status TEXT,latitude REAL,longitude REAL,notes TEXT,status TEXT,assigned_ambulance_id INTEGER,assigned_at TEXT,created_at TEXT,updated_at TEXT);
 CREATE TABLE IF NOT EXISTS tracking_events(id INTEGER PRIMARY KEY,emergency_id INTEGER,ambulance_id INTEGER,latitude REAL,longitude REAL,status TEXT,timestamp TEXT);
 CREATE TABLE IF NOT EXISTS hospital_alerts(id INTEGER PRIMARY KEY,emergency_id INTEGER,hospital_name TEXT,eta TEXT,status TEXT,created_at TEXT);
 '''
@@ -107,7 +107,7 @@ def init_db():
     c = conn()
     c.executescript(SCHEMA)
     columns = {x['name'] for x in c.execute('pragma table_info(emergency_requests)').fetchall()}
-    for name, definition in [('patient_name','text'),('assigned_at','text'),('patient_count','integer default 1'),('incident_id','text'),('severity','text'),('traffic_level','text'),('hospital_status','text')]:
+    for name, definition in [('patient_name','text'),('patient_phone','text'),('assigned_at','text'),('patient_count','integer default 1'),('incident_id','text'),('severity','text'),('traffic_level','text'),('hospital_status','text')]:
         if name not in columns: c.execute(f'alter table emergency_requests add column {name} {definition}')
     c.execute('create unique index if not exists one_active_sos_per_patient on emergency_requests(patient_id) where status not in ("COMPLETED","CANCELLED")')
     c.commit()
@@ -203,6 +203,7 @@ def emergency_view(e):
     e['ambulance']=a
     if a: e['distance_km']=round(hav(a['ambulance_latitude'],a['ambulance_longitude'],e['latitude'],e['longitude']),1); e['eta_minutes']=max(2,round(e['distance_km']*2.4))
     e['patient_count']=e.get('patient_count') or 1; e['incident_id']=e.get('incident_id') or f'INC-{e["id"]:04d}'; e['traffic_level']=e.get('traffic_level') or 'Moderate'; e['hospital_status']=e.get('hospital_status') or 'PENDING'
+    e['patient_phone']=e.get('patient_phone') or '9111111111'
     return e
 @app.post('/api/emergency')
 def emergency_create():
@@ -211,14 +212,15 @@ def emergency_create():
     except (TypeError,ValueError): return out({'error':'Use a valid location and whole-number patient count.'},400)
     if not (-90<=lat<=90 and -180<=lng<=180 and 1<=count<=6): return out({'error':'Location or patient count is outside the permitted demo range.'},400)
     if typ not in ('Accident','Medical Emergency','Pregnancy','Other') or priority not in ('LOW','MEDIUM','HIGH','CRITICAL'): return out({'error':'Choose a valid emergency type and severity.'},400)
-    profile=session.get('user',{}) if session.get('user',{}).get('role')=='PATIENT' else row('select id,name from users where email=?',('patient@demo.in',)) or {}
+    profile=session.get('user',{}) if session.get('user',{}).get('role')=='PATIENT' else row('select id,name,phone from users where email=?',('patient@demo.in',)) or {}
     pid=profile.get('id'); patient_name=d.get('name') or profile.get('name') or 'Demo Patient'
+    patient_phone=str(d.get('phone') or profile.get('phone') or '9111111111').strip()
     active=row('select * from emergency_requests where (patient_id=? or patient_name=?) and status not in ("COMPLETED","CANCELLED") order by id desc',(pid,patient_name))
     if active: return out({'duplicate':True,'message':'An active emergency request already exists.','emergency':emergency_view(active)},409)
     near=rows('select * from emergency_requests where status not in ("COMPLETED","CANCELLED") and abs(latitude-?)<0.006 and abs(longitude-?)<0.006',(lat,lng)); incident=(near[0].get('incident_id') if near and near[0].get('incident_id') else f'INC-{datetime.now().strftime("%H%M%S")}')
     traffic=['Light','Moderate','Heavy'][int(abs(lat*1000+lng*1000))%3]
     try:
-        eid=execute('insert into emergency_requests(patient_id,patient_name,emergency_type,priority,patient_count,incident_id,severity,traffic_level,hospital_status,latitude,longitude,notes,status,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(pid,patient_name,typ,priority,count,incident,priority,traffic,'PENDING',lat,lng,d.get('notes',''),'SEARCHING',now(),now()))
+        eid=execute('insert into emergency_requests(patient_id,patient_name,patient_phone,emergency_type,priority,patient_count,incident_id,severity,traffic_level,hospital_status,latitude,longitude,notes,status,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(pid,patient_name,patient_phone,typ,priority,count,incident,priority,traffic,'PENDING',lat,lng,d.get('notes',''),'SEARCHING',now(),now()))
     except sqlite3.IntegrityError:
         active=row('select * from emergency_requests where patient_id=? and status not in ("COMPLETED","CANCELLED") order by id desc',(pid,))
         return out({'duplicate':True,'message':'An active emergency request already exists.','emergency':emergency_view(active)},409)
@@ -290,7 +292,7 @@ def history_data(search='', status='ALL'):
     if status in ('COMPLETED','CANCELLED'): where.append('e.status=?'); args.append(status)
     if search:
         term=f'%{search.strip()}%'; where.append('(e.patient_name like ? or a.registration_number like ? or u.name like ? or e.emergency_type like ?)'); args.extend([term,term,term,term])
-    return rows(f'''select e.id,e.patient_name,e.emergency_type,e.priority,e.status,e.created_at,e.updated_at,e.assigned_at,
+    return rows(f'''select e.id,e.patient_name,coalesce(e.patient_phone,'9111111111') patient_phone,e.emergency_type,e.priority,e.status,e.created_at,e.updated_at,e.assigned_at,
         coalesce(a.registration_number,'Unassigned') ambulance_number,coalesce(u.name,'Unassigned') driver_name,
         coalesce((select hospital_name from hospital_alerts h where h.emergency_id=e.id order by h.id desc limit 1),'Not recorded') hospital_name,
         case when e.assigned_at is not null then max(0,round((julianday(e.assigned_at)-julianday(e.created_at))*1440)) else null end response_minutes
