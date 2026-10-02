@@ -1,7 +1,7 @@
 {
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/((?!static/|.*\\.[\\w]+$).*)",
       "destination": "/app.py"
     }
   ]
